@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Calc</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+
+<body>
+<div class="login-box"><h2>List Of Expressions</h2></div>
+{{range .}}
+    <div class="login-box" style="margin-top: 100px; font-size: 20px">
+        <p style="color: bisque;">Expression: {{.Expression}}</p>
+        <br>
+        <p style="color: rgb(31, 185, 67);">Started at: {{.Start}}</p>
+        <br>
+        <p style="color: rgb(193, 31, 31);">Ends in: {{.Duration}}</p>
+        <br>
+        <p style="color: rgb(81, 135, 251);">Status: {{.Status}}</p>
+        <br>
+        <p style="color: rgb(235, 68, 199);">UserID: {{.UserID}}</p>
+        <br>
+        <p style="color: rgb(162,58,232);">Working goroutine id: {{.GoroutineId}}</p>
+        <br>
+        <p style="color: rgb(205,174,51);">Heartbeat from goroutine at: {{.HeartBeat}}</p>
+    </div>
+{{end}}
+</body>
+
+</html>

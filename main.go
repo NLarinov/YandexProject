@@ -1,53 +1,134 @@
 package main
 
-// todo: another pages
-// todo: agent
+// todo: add fitch to change duration
+// todo: save files after closing server and safe close
+// todo: add comments and description
 
 import (
 	"encoding/json"
+	"github.com/overseven/go-math-expression-parser/parser"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
 
 type Operation struct {
-	UserID      int       `json:"user_id"`
-	OperationID int       `json:"operation_id"`
-	Expression  string    `json:"expression"`
-	Start       time.Time `json:"start"`
-	Finish      time.Time `json:"finish"`
-	Status      string    `json:"status"`
-	result      int
-	end         chan struct{}
+	UserID      int           `json:"user_id"`
+	OperationID int           `json:"operation_id"`
+	Expression  string        `json:"expression"`
+	Start       time.Time     `json:"start"`
+	Duration    time.Duration `json:"duration"`
+	Status      string        `json:"status"`
+	HeartBeat   time.Time     `json:"HeartBeat"`
+	GoroutineId int           `json:"GoroutineId"`
+	timer       time.Timer
 }
 
 type Cache struct {
-	currData           map[int]Operation // key-OperationId value-Operation
-	currentOperationID int
-	locker             sync.RWMutex
-	interval           time.Duration
-	stop               chan struct{}
+	currData          map[int]Operation // ключ-OperationId значение-Operation
+	lastOperationID   int
+	locker            sync.RWMutex
+	interval          time.Duration
+	heartBeatDuration time.Duration
+	stop              chan struct{}
 }
 
-var GlobalCache Cache
-var CurrentUserID int
+var globalCache *Cache
+var currentUserID int
+var allowed = []rune{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', '-', '*', '(', ')', ' '}
+var flag bool
 
-func (o *Operation) agent() {
-	// select {
-	// case <-o.end:
-	// 	o.result = parser
-	// }
+var devMode = true
+var numberOfCalculatingServers = 5
+var heartbeatDuration = time.Second * 10
+var checkInterval = time.Second
+var defaultTimerDuration = time.Second * 10
+
+func (c *Cache) calculate(id int) {
+	ticker := time.NewTicker(c.heartBeatDuration)
+	for {
+		select {
+		case <-ticker.C:
+			c.locker.Lock()
+			val := c.currData[id]
+			val.HeartBeat = time.Now()
+			c.currData[id] = val
+			c.locker.Unlock()
+		case <-c.currData[id].timer.C:
+			c.locker.RLock()
+			val := c.currData[id]
+			c.locker.RUnlock()
+			prs := parser.NewParser()
+			_, err := prs.Parse(val.Expression)
+			if err != nil {
+				val.Status = "invalid expression"
+				return
+			}
+			res, err := prs.Evaluate(make(map[string]float64))
+			if err != nil {
+				val.Status = "invalid expression"
+				return
+			}
+			val.Expression += " = " + strconv.FormatFloat(res, 'G', -1, 32)
+			val.Status = "done"
+			val.GoroutineId = -1
+
+			c.locker.Lock()
+			c.currData[id] = val
+			c.locker.Unlock()
+
+			log.Println("done", res, c.currData[id])
+		}
+	}
 }
 
-// todo: check expressions
+func (c *Cache) calculatingServer(i int) {
+	ticker := time.NewTicker(c.interval)
+	for {
+		select {
+		case <-ticker.C:
+			c.locker.Lock()
+			for id, value := range c.currData {
+				if value.Status == "free" {
+					value.Status = "proceeding"
+					log.Println("proceed")
+					value.GoroutineId = i
+					c.currData[id] = value
+
+					// по факту запускаем только одно вычислительную горутину ибо у нас и так есть вычислитель
+					go c.calculate(id)
+
+				}
+			}
+			c.locker.Unlock()
+		case <-c.stop:
+			ticker.Stop()
+			return
+		}
+	}
+}
+
 func checkExpression(e string) bool {
+	for _, v1 := range e {
+		flag = false
+		for _, v2 := range allowed {
+			if v1 == v2 {
+				flag = true
+				break
+			}
+		}
+		if !flag {
+			return false
+		}
+	}
 	return true
 }
 
-func login(w http.ResponseWriter, r *http.Request) {
+func login(w http.ResponseWriter) {
 	var fileName = "new.html"
 	t, err := template.ParseFiles(fileName)
 	if err != nil {
@@ -62,10 +143,10 @@ func login(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkForRunning(exp string) bool {
-	GlobalCache.locker.RLock()
-	defer GlobalCache.locker.RUnlock()
-	for _, v := range GlobalCache.currData {
-		if v.UserID == CurrentUserID && v.Expression == exp {
+	globalCache.locker.RLock()
+	defer globalCache.locker.RUnlock()
+	for _, v := range globalCache.currData {
+		if v.UserID == currentUserID && v.Expression == exp {
 			return true
 		}
 	}
@@ -73,15 +154,17 @@ func checkForRunning(exp string) bool {
 }
 
 func addOperation(exp string) {
-	GlobalCache.locker.Lock()
-	defer GlobalCache.locker.Unlock()
-	GlobalCache.currData[GlobalCache.currentOperationID] = Operation{
-		UserID:      CurrentUserID,
-		OperationID: GlobalCache.currentOperationID,
+	identificationNumber := time.Now().Unix()
+	globalCache.locker.Lock()
+	defer globalCache.locker.Unlock()
+	globalCache.currData[int(identificationNumber)] = Operation{
+		UserID:      currentUserID,
+		OperationID: int(identificationNumber),
 		Expression:  exp,
 		Start:       time.Now(),
-		Finish:      time.Now().Add(5 * time.Minute),
-		Status:      "proceeding",
+		Duration:    time.Minute * 1,
+		Status:      "free",
+		timer:       *time.NewTimer(defaultTimerDuration),
 	}
 }
 
@@ -105,7 +188,7 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 				addOperation(expression)
 			} else {
 				w.WriteHeader(http.StatusBadRequest)
-				log.Println("ivalid expression")
+				log.Println("invalid expression")
 			}
 		}
 	}
@@ -116,7 +199,7 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error while parsing the files: %s", err)
 		return
 	}
-	err = t.ExecuteTemplate(w, fileName, GlobalCache.currData)
+	err = t.ExecuteTemplate(w, fileName, globalCache.currData)
 	if err != nil {
 		log.Printf("Error while executing the files: %s", err)
 		return
@@ -127,7 +210,7 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 func handler(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/":
-		login(w, r)
+		login(w)
 	case "/list-ex":
 		listExp(w, r)
 	default:
@@ -158,7 +241,7 @@ func readJSONFromFile(filename string) (map[int]Operation, error) {
 		return nil, err
 	}
 
-	var operations []Operation
+	var operations map[int]Operation
 	err = json.Unmarshal(operationsJSON, &operations)
 	if err != nil {
 		return nil, err
@@ -173,73 +256,77 @@ func readJSONFromFile(filename string) (map[int]Operation, error) {
 	return opr, nil
 }
 
-func (c *Cache) updating() {
-	ticker := time.NewTicker(c.interval)
-	for {
-		select {
-		case <-ticker.C:
-			c.update()
-		case <-c.stop:
-			ticker.Stop()
-			return
-		}
-	}
-}
+//func (c *Cache) updating() {
+//	ticker := time.NewTicker(c.interval)
+//	for {
+//		select {
+//		case <-ticker.C:
+//			c.update()
+//		case <-c.stop:
+//			ticker.Stop()
+//			return
+//		}
+//	}
+//}
+//
+//func (c *Cache) update() {
+//	//c.locker.Lock()
+//	//defer c.locker.Unlock()
+//	//for _, data := range c.currData {
+//	//	if data.Status == "proceeding" {
+//	//		if time.Now().After(data.Finish) {
+//	//			data.Status = "done"
+//	//			close(data.end)
+//	//		}
+//	//	}
+//	//}
+//}
 
-func (c *Cache) update() {
-	c.locker.Lock()
-	defer c.locker.Unlock()
-	for key, data := range c.currData {
-		if data.Status == "proceeding" {
-			if time.Now().After(data.Finish) {
-				data.Status = "done"
-				close(data.end)
-				c.currData[key] = data
-			} else {
-				// запуск агента
-				go data.agent()
-			}
-		}
-	}
-}
-
-func NewCache(arr map[int]Operation, cleanUpInterval time.Duration) *Cache {
+func demon(arr map[int]Operation) *Cache {
 	cache := &Cache{
-		currData: arr,
-		interval: cleanUpInterval,
-		stop:     make(chan struct{}),
+		currData:          arr,
+		interval:          checkInterval,
+		heartBeatDuration: heartbeatDuration,
+		stop:              make(chan struct{}),
 	}
 
-	if cleanUpInterval > 0 {
-		go cache.updating()
+	for i := 0; i < numberOfCalculatingServers; i++ {
+		// запускаем вычислительные серваки
+		go cache.calculatingServer(i)
 	}
+
 	return cache
 }
 
-func initialise(devMode bool, cleanUpInterval time.Duration) *Cache {
+func initialise() *Cache {
 	var err error
 	array := make(map[int]Operation)
 
 	if devMode {
 		array, err = readJSONFromFile("data.json")
 		if err != nil {
+			log.Println(err)
 			log.Fatal("error while reading json")
 			return &Cache{}
 		}
 	}
 
-	return NewCache(array, cleanUpInterval)
+	return demon(array)
 }
 
 // функция запуска сервака
 func main() {
 	// параметры запуска, подробнее в README
-	GlobalCache = *initialise(true, 30*time.Second)
-	CurrentUserID = GlobalCache.currData[GlobalCache.currentOperationID].UserID + 1
+	globalCache = initialise()
+	currentUserID = globalCache.currData[globalCache.lastOperationID].UserID + 1
 
 	// todo: safe exit and stop updating
 
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	http.HandleFunc("/", handler)
-	http.ListenAndServe("", nil)
+	err := http.ListenAndServe("", nil)
+	if err != nil {
+		log.Fatal("server error")
+		return
+	}
 }

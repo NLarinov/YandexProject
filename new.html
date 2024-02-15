@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Calc</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+
+<body>
+<div class="login-box" style="margin-top: 20%;">
+    <form action="/list-ex" method="POST" id="form1">
+        <div class="user-box">
+            <input type="text" id="expression" name="expression" value="">
+            <label for="expression" style="font-size: 20px;">Enter expression:</label>
+        </div>
+
+        <a href="javascript:" onclick="document.getElementById('form1').submit();">
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            Submit
+        </a>
+    </form>
+</div>
+</body>
+
+</html>
