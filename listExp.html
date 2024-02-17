@@ -24,6 +24,18 @@
         <p style="color: rgb(162,58,232);">Working goroutine id: {{.GoroutineId}}</p>
         <br>
         <p style="color: rgb(205,174,51);">Heartbeat from goroutine at: {{.HeartBeat}}</p>
+        <br>
+        <form action="/list-ex" method="POST" id={{.OperationID}}>
+            <input type="text" hidden="hidden" id="id" name="id" value={{.OperationID}}>
+
+            <a href="javascript:" onclick="document.getElementById({{.OperationID}}).submit();">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                Add time
+            </a>
+        </form>
     </div>
 {{end}}
 </body>
