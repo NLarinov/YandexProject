@@ -6,6 +6,7 @@ _This is my Yandex golang project_
 
 _to run server:_ 
 ```
+cd YandexProject
 go run main.go
 ```
 
