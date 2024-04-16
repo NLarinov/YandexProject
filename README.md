@@ -6,7 +6,6 @@ _This is my Yandex golang project_
 
 _to run server:_ 
 ```
-cd YandexProject
 go env -w CGO_ENABLED=1
 go run main.go
 ```
