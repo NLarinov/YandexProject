@@ -7,8 +7,9 @@
     <link rel="stylesheet" href="static/style.css">
 </head>
 
-<body>
+<body onLoad="top.scroll(-1,1000000);">
 <div class="login-box"><h2>List Of Expressions</h2></div>
+
 {{range .}}
     <div class="login-box" style="margin-top: 100px; font-size: 20px">
         <p style="color: bisque;">Expression: {{.Expression}}</p>
@@ -34,6 +35,16 @@
                 <span></span>
                 <span></span>
                 Add time
+            </a>
+        </form>
+        <form action="/list-ex" method="GET" id="button">
+            <input type="text" hidden="hidden" id="button" name="button" value={{.UserID}}>
+            <a href="javascript:" onclick="document.getElementById('button').submit();">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                Refresh Page
             </a>
         </form>
     </div>

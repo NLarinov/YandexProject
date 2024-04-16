@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/golang-jwt/jwt/v5"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/overseven/go-math-expression-parser/parser"
 	"golang.org/x/sync/errgroup"
 	"html/template"
@@ -19,15 +22,23 @@ import (
 
 // Operation structure for operation
 type Operation struct {
-	UserID      int              `json:"user_id"`
-	OperationID string           `json:"operation_id"` // unique number for each operation
-	Expression  string           `json:"expression"`   // mathematical expression
-	Start       time.Time        `json:"start"`        // start time of operation
-	Duration    time.Duration    `json:"duration"`     // duration of operation
-	Status      string           `json:"status"`       // status of operation (done, proceeding, free)
-	HeartBeat   time.Time        `json:"HeartBeat"`    // period of sending info from goroutine
-	GoroutineId int              `json:"GoroutineId"`
+	UserID      int
+	OperationID string // unique number for each operation
+	Expression  string // mathematical expression
+	Start       string // start time of operation
+	Duration    string // duration of operation
+	Status      string // status of operation (done, proceeding, free)
+	HeartBeat   string // period of sending info from goroutine
+	GoroutineId int
 	timer       chan interface{} // close channel
+}
+
+// User structure for reading from db
+type User struct {
+	Id       int
+	Login    string
+	Password string
+	Token    string
 }
 
 // Cache structure for cache, which includes all current running operations
@@ -42,12 +53,12 @@ type Cache struct {
 
 // do not change
 var globalCache *Cache
+var db *sql.DB
 var currentUserID int
 var allowed = []rune{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', '-', '*', '/', '(', ')', ' '}
 var flag bool
 
 // const variables (changeable)
-var devMode = true                          // if on: loads data from database in Cache, else makes empty Cache
 var numberOfCalculatingServers = 5          // number of servers that are active after server starts
 var heartbeatDuration = time.Second * 2     // (Cache.heartBeatDuration)
 var checkInterval = time.Second             // (Cache.interval)
@@ -62,9 +73,10 @@ func (c *Cache) calculate(id string) {
 		case <-ticker.C: // refresh duration and send heartbeat
 			c.locker.Lock()
 			val := c.currData[id]
-			val.HeartBeat = time.Now()
-			val.Duration -= c.heartBeatDuration
-			if val.Duration <= 0 {
+			val.HeartBeat = time.Now().String()
+			times, _ := time.ParseDuration(val.Duration)
+			val.Duration = (times - heartbeatDuration).String()
+			if times <= 0 {
 				close(val.timer)
 			}
 			c.currData[id] = val
@@ -85,10 +97,13 @@ func (c *Cache) calculate(id string) {
 				val.Status = "invalid expression"
 				return
 			}
-			val.Expression += " = " + strconv.FormatFloat(res, 'G', -1, 32)
+			result := strconv.FormatFloat(res, 'G', -1, 32)
+			if val.Expression[len(val.Expression)-len(result):] != result {
+				val.Expression += " = " + result
+			}
 
 			val.Status = "done"
-			val.Duration = 0
+			val.Duration = (time.Second * 0).String()
 			val.GoroutineId = -1
 			ticker.Stop()
 
@@ -144,7 +159,7 @@ func checkExpression(e string) bool {
 }
 
 // handle default page
-func login(w http.ResponseWriter) {
+func handleAddExpression(w http.ResponseWriter) {
 	var fileName = "new.html"
 	t, err := template.ParseFiles(fileName)
 	if err != nil {
@@ -182,8 +197,8 @@ func addOperation(exp string) {
 		UserID:      currentUserID,
 		OperationID: strconv.Itoa(int(identificationNumber)),
 		Expression:  exp,
-		Start:       time.Now(),
-		Duration:    defaultTimerDuration,
+		Start:       time.Now().String(),
+		Duration:    defaultTimerDuration.String(),
 		Status:      "free",
 		timer:       make(chan interface{}),
 	}
@@ -195,7 +210,8 @@ func addTime(id string) {
 	defer globalCache.locker.Unlock()
 
 	val := globalCache.currData[id]
-	val.Duration += addDuration
+	times, _ := time.ParseDuration(val.Duration)
+	val.Duration = (times + addDuration).String()
 
 	globalCache.currData[id] = val
 }
@@ -203,28 +219,75 @@ func addTime(id string) {
 // handle page with expressions
 func listExp(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
-		expression := r.FormValue("expression")
 		id := r.FormValue("id")
-
-		if len(expression) == 0 {
+		if len(id) != 0 {
 			addTime(id)
-		}
-
-		ok := checkForRunning(expression) // check if expression is already running
-
-		if ok {
-			w.WriteHeader(http.StatusOK)
-			log.Println("already in progress")
 		} else {
-			if checkExpression(expression) { // if expression is valid
-				w.WriteHeader(http.StatusOK)
-				log.Println("valid expression")
-
-				addOperation(expression) // adding operation to the globalCache
-			} else {
+			tokenString := r.FormValue("token")
+			if tokenString == "" {
 				w.WriteHeader(http.StatusBadRequest)
-				log.Println("invalid expression")
+				return
 			}
+
+			token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+				return []byte("your-secret-key-here"), nil
+			})
+			if err != nil {
+				log.Fatal(err)
+			}
+			claims, ok := token.Claims.(jwt.MapClaims)
+			if !ok || !token.Valid {
+				log.Fatal(err)
+			}
+			userLogin, ok := claims["login"].(string)
+			if !ok {
+				log.Fatal(err)
+			}
+
+			var userID int
+			err = db.QueryRow(`SELECT id FROM users WHERE login=$1`, userLogin).Scan(&userID)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if userID == 0 {
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+
+			currentUserID = userID
+			expression := r.FormValue("expression")
+
+			ok = checkForRunning(expression) // check if expression is already running
+
+			if ok {
+				w.WriteHeader(http.StatusOK)
+				log.Println("already in progress")
+			} else {
+				if checkExpression(expression) { // if expression is valid
+					w.WriteHeader(http.StatusOK)
+					log.Println("valid expression")
+
+					addOperation(expression) // adding operation to the globalCache
+				} else {
+					w.WriteHeader(http.StatusBadRequest)
+					log.Println("invalid expression")
+				}
+			}
+		}
+	} else {
+		idUser := r.FormValue("button")
+		if len(idUser) != 0 {
+			currentUserID, _ = strconv.Atoi(idUser)
+		} else {
+			currentUserID = -1
+		}
+	}
+
+	res := make(map[string]Operation)
+
+	for s, v := range globalCache.currData {
+		if v.UserID == currentUserID {
+			res[s] = v
 		}
 	}
 
@@ -234,68 +297,131 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error while parsing the files: %s", err)
 		return
 	}
-	err = t.ExecuteTemplate(w, fileName, globalCache.currData) // executing page with data from Cache
+	err = t.ExecuteTemplate(w, fileName, res) // executing page with data from Cache
 	if err != nil {
 		log.Printf("Error while executing the files: %s", err)
 		return
 	}
 }
 
+func register(w http.ResponseWriter, r *http.Request) {
+	var user User
+	err := json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	var count int
+	err = db.QueryRow(`SELECT COUNT(*) FROM users WHERE login=$1`, user.Login).Scan(&count)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if count == 1 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec(`REPLACE INTO users (id, login, password) VALUES ($1, $2, $3)`, strconv.Itoa(int(time.Now().Unix())), user.Login, user.Password)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+}
+
+func login(w http.ResponseWriter, r *http.Request) {
+	var mainUser User
+	err := json.NewDecoder(r.Body).Decode(&mainUser)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	var count int
+	err = db.QueryRow(`SELECT COUNT(*) FROM users WHERE login=$1`, mainUser.Login).Scan(&count)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if count == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	token := jwt.New(jwt.SigningMethodHS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["login"] = mainUser.Login
+	claims["exp"] = time.Now().Add(24 * time.Hour).Unix()
+
+	tokenString, err := token.SignedString([]byte("your-secret-key-here"))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(tokenString))
+}
+
 // page handlers
 func handler(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/":
-		login(w)
+		handleAddExpression(w)
 	case "/list-ex":
 		listExp(w, r)
+	case "/api/v1/register":
+		register(w, r)
+	case "/api/v1/login":
+		login(w, r)
 	default:
 		http.Error(w, "404 PAGE NOT FOUND", http.StatusNotFound)
 	}
 }
 
 // write to file
-func writeJSONToFile(filename string, operations map[string]Operation) error {
-	operationsJSON, err := json.Marshal(operations)
-	if err != nil {
-		return err
-	}
-
-	err = os.WriteFile(filename, operationsJSON, 0644)
-	if err != nil {
-		return err
+func writeSQL(operations map[string]Operation) error {
+	for _, v := range operations {
+		_, err := db.Exec(`REPLACE INTO operations (user_id, operation_id, expression, start, duration, status, heartbeat, goroutine_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			v.UserID, v.OperationID, v.Expression, v.Start, v.Duration, v.Status, v.HeartBeat, v.GoroutineId)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-// read to JSON
-func readJSONFromFile(filename string) (map[string]Operation, error) {
-	operationsJSON, err := os.ReadFile(filename)
+// read from db
+func readSQL() (map[string]Operation, error) {
+	rows, err := db.Query(`SELECT * from operations`)
 	if err != nil {
-		log.Println(err)
-		return nil, err
+		log.Fatal(err)
 	}
 
-	var operations map[string]Operation
-	err = json.Unmarshal(operationsJSON, &operations)
-	if err != nil {
-		return nil, err
-	}
+	operations := make(map[string]Operation)
 
-	opr := make(map[string]Operation)
-
-	for _, v := range operations {
-		if v.Status == "proceeding" { // if server was closed before ending operation
-			v.Status = "free"
+	for rows.Next() {
+		var op Operation
+		err = rows.Scan(&op.UserID, &op.OperationID, &op.Expression, &op.Start, &op.Duration, &op.Status, &op.HeartBeat, &op.GoroutineId)
+		if err != nil {
+			log.Fatal(err)
+			return nil, err
 		}
-		v.timer = make(chan interface{})
-		opr[v.OperationID] = v
+
+		// if server was closed before ending operation
+		if op.Status == "proceeding" {
+			op.Status = "free"
+		}
+		operations[op.OperationID] = op
 	}
 
-	return opr, nil
+	return operations, nil
 }
 
-func demon(arr map[string]Operation) *Cache {
+// Establish SQL database connection
+func establishSQLConnection(arr map[string]Operation) *Cache {
 	cache := &Cache{
 		currData:          arr,
 		interval:          checkInterval,
@@ -311,21 +437,19 @@ func demon(arr map[string]Operation) *Cache {
 	return cache
 }
 
-// initialise Cache
-func initialise() *Cache {
+// initialize Cache
+func initialize() *Cache {
 	var err error
 	array := make(map[string]Operation)
 
-	if devMode {
-		array, err = readJSONFromFile("db/data.json")
-		if err != nil {
-			log.Println(err)
-			log.Fatal("error while reading json")
-			return &Cache{}
-		}
+	array, err = readSQL()
+	if err != nil {
+		log.Println(err)
+		log.Fatal("error while reading from SQL database")
+		return &Cache{}
 	}
 
-	return demon(array)
+	return establishSQLConnection(array)
 }
 
 // deploying server
@@ -341,8 +465,21 @@ func main() {
 		cancel()
 	}()
 
-	globalCache = initialise()
-	currentUserID = globalCache.currData[strconv.Itoa(globalCache.lastOperationID)].UserID + 1 // increment userID
+	log.Println("starting db...")
+
+	var err error
+	db, err = sql.Open("sqlite3", "db/calc.db")
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	if err = db.Ping(); err != nil {
+		log.Fatal(err)
+	}
+
+	globalCache = initialize()
+	log.Println("starting server...")
 
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	http.HandleFunc("/", handler)
@@ -357,19 +494,22 @@ func main() {
 		return httpServer.ListenAndServe()
 	})
 
+	log.Println("Server started on port 8000")
+
 	g.Go(func() error {
 		<-gCtx.Done()
 
-		close(globalCache.stop)                                      // close Cache
-		err := writeJSONToFile("db/data.json", globalCache.currData) // write Cache to file
+		close(globalCache.stop)
+		err = writeSQL(globalCache.currData)
 		if err != nil {
-			log.Println("error while writing to file")
+			log.Println("error while writing to db")
 		}
+		_ = db.Close()
 
 		return httpServer.Shutdown(context.Background())
 	})
 
-	if err := g.Wait(); err != nil {
+	if err = g.Wait(); err != nil {
 		fmt.Printf("exit reason: %s \n", err)
 	}
 }

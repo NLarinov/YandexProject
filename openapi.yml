@@ -1,0 +1,118 @@
+openapi: "3.0.1"
+info:
+  title: YandexCalc API
+  version: "1.0"
+servers:
+  - url: http://localhost:8000/api/v1
+paths:
+  /register:
+    post:
+      summary: Регистрация нового пользователя
+      description: |
+        Используется для регистрации нового пользователя по логину и паролю.
+      operationId: authRegister
+      requestBody:
+        description: Данные для регистрации пользователя.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                login:
+                  $ref: "#/components/schemas/userLogin"
+                password:
+                  $ref: "#/components/schemas/userPassword"
+              required:
+                - login
+                - password
+      responses:
+        "200":
+          description: |
+            Возвращается ОК
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+        "400":
+          description: |
+            Регистрационные данные не соответствуют ожидаемому формату и требованиям.
+  /login:
+    post:
+      summary: Аутентификация для получения токена
+      description: |
+        Процедура аутентификации по логину и паролю позволяет получить токен, который в дальнейшем будет использоваться пользователем для выполнения операций, требующих авторизацию.
+      operationId: authSignIn
+      requestBody:
+        description: Данные для аутентификации пользователя.
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                login:
+                  $ref: "#/components/schemas/userLogin"
+                password:
+                  $ref: "#/components/schemas/userPassword"
+              required:
+                - login
+                - password
+      responses:
+        "200":
+          description: Успешная аутентификация
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    description: Сгенерированный токен пользователя
+                    minLength: 20
+                    example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+                required:
+                  - token
+        "400":
+          description: |
+            Данные не соответствуют ожидаемому формату и требованиям.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/errorResponse"
+        "401":
+          description: |
+            Нет данных о пользователе в БД.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/errorResponse"
+        "500":
+          description: |
+            Ошибка сервера
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/errorResponse"
+components:
+  schemas:
+    userLogin:
+      type: string
+      description: Логин пользователя
+      example: yellowMonkey
+    userPassword:
+      type: string
+      example: $aba4821FWfew01#.fewA$
+    errorResponse:
+      type: object
+      description: Используется для возвращения ошибки пользователю
+      properties:
+        reason:
+          type: string
+          description: Описание ошибки в свободной форме
+          minLength: 5
+      required:
+        - reason
+      example:
+        reason: <объяснение, почему запрос пользователя не может быть обработан>

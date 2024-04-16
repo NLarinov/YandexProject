@@ -1,4 +1,4 @@
-# Welcome
+# YandexCalc
 
 _This is my Yandex golang project_
 
@@ -7,22 +7,27 @@ _This is my Yandex golang project_
 _to run server:_ 
 ```
 cd YandexProject
+go env -w CGO_ENABLED=1
 go run main.go
 ```
 
 code has all requireable comments about functions and structures
 
-### Pages:
+### Steps:
 
-* new.html (http://localhost:8000) expression input
-* listExp.html (http://localhost:8000/list-ex) list of expressions
+* Open main page http://localhost:8000
+* Open openapi.yml with Swagger or Redoc(preferable)
+* Register
+* Login, get a token
+* Enter an expression and the token
+* Enjoy)
 
 to add time (addDuration) click on "ADD TIME" on listExp.html;
 list of expressions shows all required data (working goroutines, id's, e.t.c);
-to see updating data you have to refresh page
+to see updating data you have to refresh page (or click on button refresh)
 
 ### Commands:
-input on new.html:
+input on main page:
 ```
 1+2+3
 ```
