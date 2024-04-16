@@ -10,6 +10,8 @@ go env -w CGO_ENABLED=1
 go run main.go
 ```
 
+you have to wait a minute for DB to init
+
 code has all requireable comments about functions and structures
 
 ### Steps:
