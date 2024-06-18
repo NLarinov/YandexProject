@@ -5,10 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/golang-jwt/jwt/v5"
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/overseven/go-math-expression-parser/parser"
-	"golang.org/x/sync/errgroup"
 	"html/template"
 	"log"
 	"net/http"
@@ -18,6 +14,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/overseven/go-math-expression-parser/parser"
+	"golang.org/x/sync/errgroup"
 )
 
 // Operation structure for operation
@@ -44,7 +45,6 @@ type User struct {
 // Cache structure for cache, which includes all current running operations
 type Cache struct {
 	currData          map[string]Operation // key OperationId, value Operation
-	lastOperationID   int                  // id of last registered Operation
 	interval          time.Duration        // refresh duration for calculatingServer
 	heartBeatDuration time.Duration        // refresh duration for calculate
 	stop              chan struct{}        // close channel
@@ -160,13 +160,13 @@ func checkExpression(e string) bool {
 
 // handle default page
 func handleAddExpression(w http.ResponseWriter) {
-	var fileName = "new.html"
+	var fileName = "templates/new.html"
 	t, err := template.ParseFiles(fileName)
 	if err != nil {
 		log.Printf("Error while parsing the files: %s", err)
 		return
 	}
-	err = t.ExecuteTemplate(w, fileName, nil)
+	err = t.ExecuteTemplate(w, "new.html", nil)
 	if err != nil {
 		log.Printf("Error while executing the files: %s", err)
 		return
@@ -233,21 +233,27 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 				return []byte("your-secret-key-here"), nil
 			})
 			if err != nil {
-				log.Fatal(err)
+				w.WriteHeader(http.StatusBadRequest)
+				log.Printf("Error while parsing the token: %s", err)
+				return
 			}
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok || !token.Valid {
-				log.Fatal(err)
+				w.WriteHeader(http.StatusBadRequest)
+				log.Println(err)
+				return
 			}
 			userLogin, ok := claims["login"].(string)
 			if !ok {
-				log.Fatal(err)
+				w.WriteHeader(http.StatusBadRequest)
+				log.Println(err)
+				return
 			}
 
 			var userID int
 			err = db.QueryRow(`SELECT id FROM users WHERE login=$1`, userLogin).Scan(&userID)
 			if err != nil {
-				log.Fatal(err)
+				log.Printf("Error while quering the db: %s", err)
 			}
 
 			if userID == 0 {
@@ -291,13 +297,13 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var fileName = "listExp.html"
+	var fileName = "templates/listExp.html"
 	t, err := template.ParseFiles(fileName)
 	if err != nil {
 		log.Printf("Error while parsing the files: %s", err)
 		return
 	}
-	err = t.ExecuteTemplate(w, fileName, res) // executing page with data from Cache
+	err = t.ExecuteTemplate(w, "listExp.html", res) // executing page with data from Cache
 	if err != nil {
 		log.Printf("Error while executing the files: %s", err)
 		return
@@ -324,6 +330,9 @@ func register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = db.Exec(`REPLACE INTO users (id, login, password) VALUES ($1, $2, $3)`, strconv.Itoa(int(time.Now().Unix())), user.Login, user.Password)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -440,9 +449,8 @@ func establishSQLConnection(arr map[string]Operation) *Cache {
 // initialize Cache
 func initialize() *Cache {
 	var err error
-	array := make(map[string]Operation)
 
-	array, err = readSQL()
+	array, err := readSQL()
 	if err != nil {
 		log.Println(err)
 		log.Fatal("error while reading from SQL database")
