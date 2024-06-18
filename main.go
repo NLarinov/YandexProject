@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -21,49 +20,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Operation structure for operation
-type Operation struct {
-	UserID      int
-	OperationID string // unique number for each operation
-	Expression  string // mathematical expression
-	Start       string // start time of operation
-	Duration    string // duration of operation
-	Status      string // status of operation (done, proceeding, free)
-	HeartBeat   string // period of sending info from goroutine
-	GoroutineId int
-	timer       chan interface{} // close channel
-}
-
-// User structure for reading from db
-type User struct {
-	Id       int
-	Login    string
-	Password string
-	Token    string
-}
-
-// Cache structure for cache, which includes all current running operations
-type Cache struct {
-	currData          map[string]Operation // key OperationId, value Operation
-	interval          time.Duration        // refresh duration for calculatingServer
-	heartBeatDuration time.Duration        // refresh duration for calculate
-	stop              chan struct{}        // close channel
-	locker            sync.RWMutex
-}
-
-// do not change
-var globalCache *Cache
-var db *sql.DB
+// current user id
 var currentUserID int
-var allowed = []rune{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', '-', '*', '/', '(', ')', ' '}
-var flag bool
 
-// const variables (changeable)
-var numberOfCalculatingServers = 5          // number of servers that are active after server starts
-var heartbeatDuration = time.Second * 2     // (Cache.heartBeatDuration)
-var checkInterval = time.Second             // (Cache.interval)
-var defaultTimerDuration = time.Second * 10 // (Operation.Duration)
-var addDuration = time.Second * 10          // duration that adds after clicking "ADD TIME" on site
+// allowed operators
+var allowed = []rune{'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '+', '-', '*', '/', '(', ')', ' '}
 
 // goroutine for calculating expressions
 func (c *Cache) calculate(id string) {
@@ -72,18 +33,18 @@ func (c *Cache) calculate(id string) {
 		select {
 		case <-ticker.C: // refresh duration and send heartbeat
 			c.locker.Lock()
-			val := c.currData[id]
+			val := c.operData[id]
 			val.HeartBeat = time.Now().String()
 			times, _ := time.ParseDuration(val.Duration)
 			val.Duration = (times - heartbeatDuration).String()
 			if times <= 0 {
 				close(val.timer)
 			}
-			c.currData[id] = val
+			c.operData[id] = val
 			c.locker.Unlock()
-		case <-c.currData[id].timer: // evaluate expression and end calculation
+		case <-c.operData[id].timer: // evaluate expression and end calculation
 			c.locker.RLock()
-			val := c.currData[id]
+			val := c.operData[id]
 			c.locker.RUnlock()
 
 			prs := parser.NewParser()
@@ -108,7 +69,7 @@ func (c *Cache) calculate(id string) {
 			ticker.Stop()
 
 			c.locker.Lock()
-			c.currData[id] = val
+			c.operData[id] = val
 			c.locker.Unlock()
 		}
 	}
@@ -121,12 +82,12 @@ func (c *Cache) calculatingServer(i int) {
 		select {
 		case <-ticker.C: // refresh and find free expressions
 			c.locker.Lock()
-			for id, value := range c.currData {
+			for id, value := range c.operData {
 				if value.Status == "free" {
 					value.Status = "proceeding"
 					log.Println("proceeded")
 					value.GoroutineId = i
-					c.currData[id] = value
+					c.operData[id] = value
 
 					// deploy calculating goroutine
 					go c.calculate(id)
@@ -143,6 +104,7 @@ func (c *Cache) calculatingServer(i int) {
 
 // check if expression is valid
 func checkExpression(e string) bool {
+	var flag bool
 	for _, v1 := range e {
 		flag = false
 		for _, v2 := range allowed {
@@ -173,15 +135,30 @@ func handleAddExpression(w http.ResponseWriter) {
 	}
 }
 
+// handle error page
+func handleErr(w http.ResponseWriter) {
+	var fileName = "templates/errPage.html"
+	t, err := template.ParseFiles(fileName)
+	if err != nil {
+		log.Printf("Error while parsing the files: %s", err)
+		return
+	}
+	err = t.ExecuteTemplate(w, "errPage.html", nil)
+	if err != nil {
+		log.Printf("Error while executing the files: %s", err)
+		return
+	}
+}
+
 // check if expression is already running
-func checkForRunning(exp string) bool {
+func (c *Cache) checkForRunning(exp string) bool {
 	if len(exp) == 0 {
 		return true
 	}
 
-	globalCache.locker.RLock()
-	defer globalCache.locker.RUnlock()
-	for _, v := range globalCache.currData {
+	c.locker.RLock()
+	defer c.locker.RUnlock()
+	for _, v := range c.operData {
 		if v.UserID == currentUserID && v.Expression == exp {
 			return true
 		}
@@ -189,11 +166,11 @@ func checkForRunning(exp string) bool {
 	return false
 }
 
-func addOperation(exp string) {
+func (c *Cache) addOperation(exp string) {
 	identificationNumber := time.Now().Unix()
-	globalCache.locker.Lock()
-	defer globalCache.locker.Unlock()
-	globalCache.currData[strconv.Itoa(int(identificationNumber))] = Operation{
+	c.locker.Lock()
+	defer c.locker.Unlock()
+	c.operData[strconv.Itoa(int(identificationNumber))] = Operation{
 		UserID:      currentUserID,
 		OperationID: strconv.Itoa(int(identificationNumber)),
 		Expression:  exp,
@@ -205,27 +182,28 @@ func addOperation(exp string) {
 }
 
 // add time to Operation.Duration
-func addTime(id string) {
-	globalCache.locker.Lock()
-	defer globalCache.locker.Unlock()
+func (c *Cache) addTime(id string) {
+	c.locker.Lock()
+	defer c.locker.Unlock()
 
-	val := globalCache.currData[id]
+	val := c.operData[id]
 	times, _ := time.ParseDuration(val.Duration)
 	val.Duration = (times + addDuration).String()
 
-	globalCache.currData[id] = val
+	c.operData[id] = val
 }
 
 // handle page with expressions
-func listExp(w http.ResponseWriter, r *http.Request) {
+func (c *Cache) listExp(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		id := r.FormValue("id")
 		if len(id) != 0 {
-			addTime(id)
+			c.addTime(id)
 		} else {
 			tokenString := r.FormValue("token")
 			if tokenString == "" {
 				w.WriteHeader(http.StatusBadRequest)
+				handleErr(w)
 				return
 			}
 
@@ -235,35 +213,34 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				log.Printf("Error while parsing the token: %s", err)
+				handleErr(w)
 				return
 			}
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok || !token.Valid {
 				w.WriteHeader(http.StatusBadRequest)
 				log.Println(err)
+				handleErr(w)
 				return
 			}
 			userLogin, ok := claims["login"].(string)
 			if !ok {
 				w.WriteHeader(http.StatusBadRequest)
 				log.Println(err)
+				handleErr(w)
 				return
 			}
 
-			var userID int
-			err = db.QueryRow(`SELECT id FROM users WHERE login=$1`, userLogin).Scan(&userID)
-			if err != nil {
-				log.Printf("Error while quering the db: %s", err)
-			}
+			v, ok := c.userData[userLogin]
 
-			if userID == 0 {
+			if !ok {
 				w.WriteHeader(http.StatusUnauthorized)
 			}
 
-			currentUserID = userID
+			currentUserID = v.Id
 			expression := r.FormValue("expression")
 
-			ok = checkForRunning(expression) // check if expression is already running
+			ok = c.checkForRunning(expression) // check if expression is already running
 
 			if ok {
 				w.WriteHeader(http.StatusOK)
@@ -273,7 +250,7 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(http.StatusOK)
 					log.Println("valid expression")
 
-					addOperation(expression) // adding operation to the globalCache
+					c.addOperation(expression) // adding operation to the globalCache
 				} else {
 					w.WriteHeader(http.StatusBadRequest)
 					log.Println("invalid expression")
@@ -291,7 +268,7 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 
 	res := make(map[string]Operation)
 
-	for s, v := range globalCache.currData {
+	for s, v := range c.operData {
 		if v.UserID == currentUserID {
 			res[s] = v
 		}
@@ -310,7 +287,7 @@ func listExp(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func register(w http.ResponseWriter, r *http.Request) {
+func (c *Cache) register(w http.ResponseWriter, r *http.Request) {
 	var user User
 	err := json.NewDecoder(r.Body).Decode(&user)
 	if err != nil {
@@ -318,27 +295,18 @@ func register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM users WHERE login=$1`, user.Login).Scan(&count)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if count == 1 {
+	if _, ok := c.userData[user.Login]; ok {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	_, err = db.Exec(`REPLACE INTO users (id, login, password) VALUES ($1, $2, $3)`, strconv.Itoa(int(time.Now().Unix())), user.Login, user.Password)
-	if err != nil {
-		log.Fatal(err)
-	}
+	c.userData[user.Login] = User{Id: int(time.Now().Unix()), Login: user.Login, Password: user.Password}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 }
 
-func login(w http.ResponseWriter, r *http.Request) {
+func (c *Cache) login(w http.ResponseWriter, r *http.Request) {
 	var mainUser User
 	err := json.NewDecoder(r.Body).Decode(&mainUser)
 	if err != nil {
@@ -346,13 +314,7 @@ func login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var count int
-	err = db.QueryRow(`SELECT COUNT(*) FROM users WHERE login=$1`, mainUser.Login).Scan(&count)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if count == 0 {
+	if _, ok := c.userData[mainUser.Login]; !ok {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -374,23 +336,23 @@ func login(w http.ResponseWriter, r *http.Request) {
 }
 
 // page handlers
-func handler(w http.ResponseWriter, r *http.Request) {
+func (c *Cache) handler(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/":
 		handleAddExpression(w)
 	case "/list-ex":
-		listExp(w, r)
+		c.listExp(w, r)
 	case "/api/v1/register":
-		register(w, r)
+		c.register(w, r)
 	case "/api/v1/login":
-		login(w, r)
+		c.login(w, r)
 	default:
 		http.Error(w, "404 PAGE NOT FOUND", http.StatusNotFound)
 	}
 }
 
 // write to file
-func writeSQL(operations map[string]Operation) error {
+func writeSQL(operations map[string]Operation, users map[string]User, db *sql.DB) error {
 	for _, v := range operations {
 		_, err := db.Exec(`REPLACE INTO operations (user_id, operation_id, expression, start, duration, status, heartbeat, goroutine_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			v.UserID, v.OperationID, v.Expression, v.Start, v.Duration, v.Status, v.HeartBeat, v.GoroutineId)
@@ -399,11 +361,40 @@ func writeSQL(operations map[string]Operation) error {
 		}
 	}
 
+	for _, v := range users {
+		_, err := db.Exec(`REPLACE INTO users (id, login, password) VALUES ($1, $2, $3)`,
+			strconv.Itoa(v.Id), v.Login, v.Password)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-// read from db
-func readSQL() (map[string]Operation, error) {
+func readUsers(db *sql.DB) (map[string]User, error) {
+	rows, err := db.Query(`SELECT * from operations`)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	users := make(map[string]User)
+
+	for rows.Next() {
+		var u User
+		err = rows.Scan(&u.Id, &u.Login, &u.Password)
+		if err != nil {
+			log.Fatal(err)
+			return nil, err
+		}
+		users[u.Login] = u
+	}
+
+	return users, nil
+}
+
+// read users from db
+func readOperations(db *sql.DB) (map[string]Operation, error) {
 	rows, err := db.Query(`SELECT * from operations`)
 	if err != nil {
 		log.Fatal(err)
@@ -430,9 +421,10 @@ func readSQL() (map[string]Operation, error) {
 }
 
 // Establish SQL database connection
-func establishSQLConnection(arr map[string]Operation) *Cache {
+func establishSQLConnection(operations map[string]Operation, users map[string]User) *Cache {
 	cache := &Cache{
-		currData:          arr,
+		userData:          users,
+		operData:          operations,
 		interval:          checkInterval,
 		heartBeatDuration: heartbeatDuration,
 		stop:              make(chan struct{}),
@@ -447,17 +439,24 @@ func establishSQLConnection(arr map[string]Operation) *Cache {
 }
 
 // initialize Cache
-func initialize() *Cache {
+func initialize(db *sql.DB) *Cache {
 	var err error
 
-	array, err := readSQL()
+	operations, err := readOperations(db)
 	if err != nil {
 		log.Println(err)
 		log.Fatal("error while reading from SQL database")
 		return &Cache{}
 	}
 
-	return establishSQLConnection(array)
+	users, err := readUsers(db)
+	if err != nil {
+		log.Println(err)
+		log.Fatal("error while reading from SQL database")
+		return &Cache{}
+	}
+
+	return establishSQLConnection(operations, users)
 }
 
 // deploying server
@@ -475,8 +474,7 @@ func main() {
 
 	log.Println("starting db...")
 
-	var err error
-	db, err = sql.Open("sqlite3", "db/calc.db")
+	db, err := sql.Open("sqlite3", "db/calc.db")
 	if err != nil {
 		log.Fatal(err)
 		return
@@ -486,11 +484,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	globalCache = initialize()
+	globalCache := initialize(db)
 	log.Println("starting server...")
 
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
-	http.HandleFunc("/", handler)
+	http.HandleFunc("/", globalCache.handler)
 
 	httpServer := &http.Server{
 		Addr: ":8000",
@@ -508,7 +506,7 @@ func main() {
 		<-gCtx.Done()
 
 		close(globalCache.stop)
-		err = writeSQL(globalCache.currData)
+		err = writeSQL(globalCache.operData, globalCache.userData, db)
 		if err != nil {
 			log.Println("error while writing to db")
 		}
