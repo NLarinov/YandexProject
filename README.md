@@ -11,7 +11,7 @@ _Hello! This is my Yandex project on Golang educational course. The technical ta
 
 _to run server:_ 
 ```
-go run main.go
+go run *.go
 ```
 
 you have to wait a minute for DB to init
